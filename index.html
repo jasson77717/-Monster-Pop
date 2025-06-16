@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>專注力遊戲：點點小怪獸</title>
+    <!-- 引入 Tailwind CSS 以方便設計美觀的介面 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Tone.js 來產生遊戲音效 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+    <style>
+        /* 自訂字體與基本樣式 */
+        body {
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+            touch-action: manipulation; /* 防止雙擊縮放，提升行動裝置體驗 */
+        }
+        
+        /* 小怪獸發光的脈衝動畫 */
+        @keyframes pulse-glow {
+            0% {
+                transform: scale(1.05);
+                box-shadow: 0 0 10px 5px rgba(251, 191, 36, 0.5);
+            }
+            50% {
+                transform: scale(1.2);
+                box-shadow: 0 0 30px 20px rgba(251, 191, 36, 0.8);
+            }
+            100% {
+                transform: scale(1.05);
+                box-shadow: 0 0 10px 5px rgba(251, 191, 36, 0.5);
+            }
+        }
+
+        /* 小怪獸格子被選中時，套用新的脈衝動畫 */
+        .monster-cell.active {
+            background-color: #FBBF24 !important; /* 強制使用亮黃色 */
+            position: relative; /* 確保動畫效果不會被其他元素遮擋 */
+            z-index: 10;
+            animation: pulse-glow 1.2s infinite ease-in-out; /* 應用動畫，無限循環 */
+        }
+
+        /* 按鈕的點擊動畫效果 */
+        .btn-press-animation {
+            transition: transform 0.1s ease;
+        }
+        .btn-press-animation:active {
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body class="bg-blue-100 flex items-center justify-center min-h-screen">
+
+    <div id="game-container" class="w-full max-w-md mx-auto p-4 md:p-6 bg-white rounded-2xl shadow-lg text-center">
+        
+        <h1 class="text-3xl md:text-4xl font-bold text-blue-800 mb-2">點點小怪獸</h1>
+        <p class="text-gray-600 mb-4">小怪獸發光時，趕快點牠！</p>
+
+        <!-- 分數和時間顯示 -->
+        <div class="flex justify-around mb-6 text-xl md:text-2xl">
+            <div>
+                <span class="font-semibold text-gray-700">分數：</span>
+                <span id="score" class="font-bold text-green-600">0</span>
+            </div>
+            <div>
+                <span class="font-semibold text-gray-700">時間：</span>
+                <span id="time" class="font-bold text-red-600">30</span>
+            </div>
+        </div>
+
+        <!-- 遊戲主畫面 (3x3 格子) -->
+        <div id="game-grid" class="grid grid-cols-3 gap-3 md:gap-4 aspect-square select-none">
+            <!-- 小怪獸格子會由 JavaScript 動態生成 -->
+        </div>
+
+        <!-- 遊戲控制按鈕和訊息區 -->
+        <div id="controls" class="mt-6 h-16 flex items-center justify-center">
+             <button id="start-btn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-xl text-2xl shadow-md btn-press-animation">
+                開始遊戲
+            </button>
+            <div id="message-box" class="hidden text-2xl font-bold text-yellow-500"></div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- 遊戲元素 ---
+        const startBtn = document.getElementById('start-btn');
+        const gameGrid = document.getElementById('game-grid');
+        const scoreDisplay = document.getElementById('score');
+        const timeDisplay = document.getElementById('time');
+        const messageBox = document.getElementById('message-box');
+        const controls = document.getElementById('controls');
+
+        // --- 遊戲設定 ---
+        const GAME_TIME = 30; // 遊戲總時長 (秒)
+        const MONSTER_COLORS = ['bg-red-300', 'bg-blue-300', 'bg-green-300', 'bg-yellow-300', 'bg-purple-300', 'bg-pink-300'];
+        const GRID_SIZE = 9;
+
+        // --- 遊戲狀態變數 ---
+        let score = 0;
+        let timeLeft = GAME_TIME;
+        let gameInterval = null; // 控制遊戲時間倒數
+        let monsterTimeout = null; // 控制小怪獸出現
+        let activeCellIndex = -1;
+        let isGameActive = false;
+
+        // --- 音效合成器 (使用 Tone.js) ---
+        // 【錯誤修正】: 將音效函式改為每次呼叫時都創建一個新的合成器實例。
+        // 這樣可以避免因快速連續觸發而導致的 Tone.js 時間排程衝突。
+
+        const playPopSound = () => {
+            // 為每次播放創建一個獨立的合成器
+            const synth = new Tone.Synth({
+                oscillator: { type: 'triangle' },
+                envelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.1 }
+            }).toDestination();
+            // 播放完後立即釋放資源
+            synth.triggerAttackRelease('C4', '8n');
+        };
+
+        const successSound = () => {
+            const synth = new Tone.PolySynth(Tone.Synth).toDestination();
+            // 播放一個開心的和弦
+            synth.triggerAttackRelease(['C4', 'E4', 'G4'], '8n');
+        };
+
+        const missSound = () => {
+             const synth = new Tone.Synth({
+                oscillator: { type: 'sawtooth' }, // 使用不同的音色以區分
+                envelope: { attack: 0.01, decay: 0.3, sustain: 0, release: 0.2 }
+            }).toDestination();
+            // 播放一個低沉的音效
+            synth.triggerAttackRelease('A2', '8n');
+        };
+
+        const endSound = () => {
+            const synth = new Tone.PolySynth(Tone.Synth).toDestination();
+            synth.triggerAttackRelease(['G4', 'E4', 'C4'], '8n');
+        }
+
+        // --- 遊戲功能 ---
+
+        // 1. 初始化遊戲格子
+        function createGrid() {
+            gameGrid.innerHTML = ''; // 清空舊的格子
+            for (let i = 0; i < GRID_SIZE; i++) {
+                const cell = document.createElement('div');
+                cell.classList.add('monster-cell', 'w-full', 'h-full', 'rounded-full', 'cursor-pointer', 'transition-all', 'duration-200', 'flex', 'items-center', 'justify-center');
+                const randomColor = MONSTER_COLORS[Math.floor(Math.random() * MONSTER_COLORS.length)];
+                cell.classList.add(randomColor);
+                cell.dataset.index = i;
+                cell.innerHTML = `<div class="text-4xl md:text-5xl transform rotate-${Math.random() > 0.5 ? '12' : '-12'}">🤪</div>`;
+                cell.addEventListener('click', handleCellClick);
+                gameGrid.appendChild(cell);
+            }
+        }
+
+        // 2. 開始遊戲
+        function startGame() {
+            // 初始化音效 (某些瀏覽器需要使用者互動後才能播放)
+            Tone.start(); 
+
+            isGameActive = true;
+            score = 0;
+            timeLeft = GAME_TIME;
+            scoreDisplay.textContent = score;
+            timeDisplay.textContent = timeLeft;
+
+            startBtn.classList.add('hidden');
+            messageBox.classList.add('hidden');
+            
+            createGrid(); 
+
+            gameInterval = setInterval(updateTimer, 1000);
+            showMonster();
+        }
+
+        // 3. 結束遊戲
+        function endGame() {
+            isGameActive = false;
+            clearInterval(gameInterval);
+            clearTimeout(monsterTimeout);
+            
+            endSound();
+            
+            messageBox.textContent = `遊戲結束！得到 ${score} 分`;
+            messageBox.classList.remove('hidden');
+            startBtn.textContent = '再玩一次';
+            startBtn.classList.remove('hidden');
+
+            const activeCell = document.querySelector('.monster-cell.active');
+            if (activeCell) {
+                activeCell.classList.remove('active');
+            }
+        }
+
+        // 4. 更新計時器
+        function updateTimer() {
+            timeLeft--;
+            timeDisplay.textContent = timeLeft;
+            if (timeLeft <= 0) {
+                endGame();
+            }
+        }
+
+        // 5. 隨機顯示一隻發光的小怪獸
+        function showMonster() {
+            if (!isGameActive) return;
+
+            const oldCell = document.querySelector('.monster-cell.active');
+            if (oldCell) {
+                oldCell.classList.remove('active');
+            }
+
+            activeCellIndex = Math.floor(Math.random() * GRID_SIZE);
+            const cell = gameGrid.children[activeCellIndex];
+            cell.classList.add('active');
+
+            // 【錯誤修正】呼叫新的音效函式
+            playPopSound();
+
+            const timeToShow = Math.max(400, 1800 - score * 40);
+            monsterTimeout = setTimeout(() => {
+                if (isGameActive) {
+                    missSound();
+                    showMonster();
+                }
+            }, timeToShow);
+        }
+
+        // 6. 處理點擊事件
+        function handleCellClick(event) {
+            if (!isGameActive) return;
+
+            const clickedIndex = parseInt(event.currentTarget.dataset.index);
+
+            if (clickedIndex === activeCellIndex) {
+                score++;
+                scoreDisplay.textContent = score;
+                successSound();
+                clearTimeout(monsterTimeout);
+                showMonster();
+            } else {
+                missSound();
+            }
+        }
+
+        // --- 事件監聽 ---
+        startBtn.addEventListener('click', startGame);
+
+        // --- 初始設定 ---
+        window.onload = () => {
+            createGrid(); 
+        };
+
+    </script>
+</body>
+</html>
